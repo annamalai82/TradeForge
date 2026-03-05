@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradeForge — Risk Intelligence Platform</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body,#root{height:100%;width:100%;background:#060b14;color:#e8edf5;font-family:'Outfit',sans-serif}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#1b2740;border-radius:3px}
+*{scrollbar-width:thin;scrollbar-color:#1b2740 transparent}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes glow{0%,100%{box-shadow:0 0 15px rgba(245,158,11,.12)}50%{box-shadow:0 0 30px rgba(245,158,11,.25)}}
+@keyframes scanline{0%{transform:translateY(-100%)}100%{transform:translateY(100%)}}
+@keyframes fadeNum{0%{opacity:.6}50%{opacity:1}100%{opacity:.6}}
+button{font-family:'Outfit',sans-serif}
+table{border-spacing:0}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useRef,useMemo,createElement:ce}=React;
+const {LineChart,Line,AreaChart,Area,BarChart,Bar,PieChart,Pie,Cell,XAxis,YAxis,CartesianGrid,Tooltip,ResponsiveContainer,RadarChart,Radar,PolarGrid,PolarAngleAxis,PolarRadiusAxis,ComposedChart,ReferenceLine,Legend}=Recharts;
+
+// ═══════════════════════════════════════════════════
+// TRADEFORGE v2.0 — Vercel Deploy Edition
+// MT4/MT5 → Firebase Firestore → Real-Time Dashboard
+// ═══════════════════════════════════════════════════
+
+// ─── Design Tokens ───
+const T={
+  bg:'#060b14',bgSub:'#0c1221',card:'#0f172a',cardHover:'#131d33',
+  border:'#1b2740',borderA:'#2a3a58',
+  amber:'#f59e0b',amberDim:'rgba(245,158,11,.12)',amberGlow:'rgba(245,158,11,.25)',
+  green:'#22c55e',greenDim:'rgba(34,197,94,.12)',
+  red:'#ef4444',redDim:'rgba(239,68,68,.12)',
+  blue:'#3b82f6',blueDim:'rgba(59,130,246,.12)',
+  purple:'#a78bfa',purpleDim:'rgba(167,139,250,.12)',
+  cyan:'#22d3ee',cyanDim:'rgba(34,211,238,.12)',
+  orange:'#ff6b35',
+  text:'#e8edf5',textSub:'#8b9dc3',textMut:'#4a5e82',
+  grid:'#152036',
+  font:"'Outfit',sans-serif",mono:"'IBM Plex Mono',monospace"
+};
+const CC=[T.amber,T.green,T.blue,T.purple,T.cyan,T.red,'#f472b6','#a3e635','#fb923c','#818cf8'];
+
+// ─── Firebase Firestore Service (Simulated) ───
+class FirestoreService{
+  constructor(){this.db={};this.listeners=new Map();this.wc=0;this.rc=0;}
+  async batchWrite(col,docs){
+    const t0=Date.now();
+    if(!this.db[col])this.db[col]={};
+    docs.forEach(d=>{this.db[col][d.id]={...d.data,_ts:new Date().toISOString()}});
+    this.wc+=docs.length;
+    return{ok:true,count:docs.length,ms:Date.now()-t0+Math.random()*40};
+  }
+  async get(col,q={}){
+    this.rc++;let r=Object.entries(this.db[col]||{}).map(([id,d])=>({id,...d}));
+    if(q.accountId)r=r.filter(d=>d.accountId===q.accountId);
+    if(q.limit)r=r.slice(0,q.limit);
+    return r;
+  }
+  onSnapshot(col,cb){
+    const id=`l_${Date.now()}_${Math.random()}`;
+    this.listeners.set(id,{col,cb});
+    cb(Object.entries(this.db[col]||{}).map(([id,d])=>({id,...d})));
+    return()=>this.listeners.delete(id);
+  }
+  notify(col){
+    this.listeners.forEach(({col:c,cb})=>{
+      if(c===col)cb(Object.entries(this.db[col]||{}).map(([id,d])=>({id,...d})));
+    });
+  }
+  stats(){return{writes:this.wc,reads:this.rc,cols:Object.keys(this.db).length,docs:Object.values(this.db).reduce((s,c)=>s+Object.keys(c).length,0),listeners:this.listeners.size};}
+}
+const FS=new FirestoreService();
+
+// ─── Data Generators ───
+const BROKERS=["IC Markets","Pepperstone","FTMO","FundedNext","Oanda","XM Global","Exness","RoboForex","FBS","Tickmill"];
+const SYMBOLS=["EURUSD","GBPUSD","USDJPY","XAUUSD","GBPJPY","AUDUSD","USDCAD","NZDUSD","EURJPY","US30"];
+const NAMES=["Alpha Scalper","Swing King","Grid Master","News Trader","Trend Rider","Mean Revert","Breakout Pro","Momentum X","Range Bound","Carry Trade"];
+
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const fix=(v,d=2)=>+(v).toFixed(d);
+
+const genAccounts=()=>Array.from({length:10},(_,i)=>{
+  const mt5=i%3!==0, bal=rnd(5000,100000), eq=bal*rnd(.92,1.08), mgn=eq*rnd(.05,.3);
+  return{
+    id:`TF-${String(i+1).padStart(3,'0')}`, login:`${mt5?5:4}${100000+Math.floor(Math.random()*900000)}`,
+    platform:mt5?'MT5':'MT4', broker:BROKERS[i], server:`${BROKERS[i].replace(/\s/g,'')}-Live${Math.ceil(Math.random()*5)}`,
+    name:NAMES[i], currency:'USD', balance:fix(bal), equity:fix(eq), profit:fix(eq-bal),
+    margin:fix(mgn), freeMargin:fix(eq-mgn), marginLevel:fix((eq/mgn)*100),
+    leverage:[100,200,500,100,200,500,100,200,500,100][i],
+    openPositions:Math.floor(rnd(1,9)), connected:Math.random()>.08, lastSync:new Date().toISOString(),
+    winRate:fix(rnd(45,75),1), profitFactor:fix(rnd(.8,2.6)), sharpeRatio:fix(rnd(-.5,2.5)),
+    maxDrawdown:fix(rnd(5,30),1), totalTrades:Math.floor(rnd(100,2000)), avgTradeTime:Math.floor(rnd(5,480)),
+  };
+});
+
+const genPositions=(aid)=>Array.from({length:Math.floor(rnd(2,8))},(_,i)=>{
+  const sym=SYMBOLS[Math.floor(Math.random()*SYMBOLS.length)],type=Math.random()>.5?'BUY':'SELL';
+  const vol=[.01,.05,.1,.2,.5,1][Math.floor(Math.random()*6)];
+  const op=sym.includes('JPY')?rnd(140,160):sym==='XAUUSD'?rnd(2300,2400):sym==='US30'?rnd(39000,41000):rnd(.9,1.7);
+  const pips=rnd(-50,50),profit=pips*vol*(sym.includes('JPY')?6.5:sym==='XAUUSD'?1:sym==='US30'?1:10);
+  return{id:`pos_${aid}_${Date.now()}_${i}`,ticket:10000000+Math.floor(Math.random()*89999999),accountId:aid,
+    symbol:sym,type,volume:vol,openPrice:fix(op,5),currentPrice:fix(op+(type==='BUY'?1:-1)*pips*.0001,5),
+    sl:fix(op+(type==='BUY'?-1:1)*rnd(20,50)*.0001,5),tp:fix(op+(type==='BUY'?1:-1)*rnd(30,90)*.0001,5),
+    profit:fix(profit),swap:fix(rnd(-5,5)),commission:fix(vol*-3.5),
+    openTime:new Date(Date.now()-Math.random()*604800000).toISOString(),magic:Math.floor(Math.random()*99999),status:'open'};
+});
+
+const genDeals=(aid,n=20)=>Array.from({length:n},(_,i)=>{
+  const sym=SYMBOLS[Math.floor(Math.random()*SYMBOLS.length)];
+  return{id:`deal_${aid}_${Date.now()}_${i}`,ticket:10000000+i,accountId:aid,symbol:sym,
+    type:Math.random()>.5?'BUY':'SELL',volume:[.01,.05,.1,.2,.5,1][Math.floor(Math.random()*6)],
+    profit:fix(rnd(-200,300)),duration:Math.round(rnd(1,480)),pips:fix(rnd(-50,50),1),
+    closeTime:new Date(Date.now()-Math.random()*2592000000).toISOString()};
+});
+
+const genEquity=(days=90)=>{let eq=10000;return Array.from({length:days},(_,i)=>{
+  eq+=eq*rnd(-.03,.03);const d=new Date(Date.now()-(days-i)*86400000);
+  return{date:d.toLocaleDateString('en-US',{month:'short',day:'numeric'}),equity:fix(eq),balance:fix(eq+rnd(-100,100)),drawdown:fix(Math.max(0,(10000-eq)/10000*100))};
+})};
+
+const genRisk=()=>({
+  conc:SYMBOLS.slice(0,6).map(s=>({symbol:s,exposure:fix(rnd(5,40)),pos:Math.floor(rnd(1,6))})),
+  corr:[{pair:'EURUSD / GBPUSD',c:.85},{pair:'USDJPY / US30',c:-.62},{pair:'AUDUSD / XAUUSD',c:.71},{pair:'EURUSD / USDCAD',c:-.78}],
+  flags:[
+    {flag:'Revenge Trading',sev:'high',n:3,detail:'3 rapid entries after losses in GBPJPY'},
+    {flag:'Overexposure',sev:'medium',n:2,detail:'JPY correlation exceeds 60% of equity'},
+    {flag:'SL Widening',sev:'high',n:5,detail:'Stop-loss moved 5 times on losing positions'},
+    {flag:'Weekend Hold',sev:'low',n:1,detail:'1 position held over weekend without SL'},
+  ],
+  dVaR:fix(rnd(2.3,5.3),1),wVaR:fix(rnd(5.1,10.1),1),maxLev:Math.floor(rnd(12,42)),
+});
+
+const genHourly=()=>Array.from({length:24},(_,h)=>({hour:`${String(h).padStart(2,'0')}:00`,trades:Math.floor(rnd(0,20)),avgProfit:fix(rnd(-30,50)),winRate:fix(rnd(30,80),1)}));
+const genDaily=()=>['Mon','Tue','Wed','Thu','Fri'].map(d=>({day:d,trades:Math.floor(rnd(10,50)),profit:fix(rnd(-200,400)),winRate:fix(rnd(40,70),1)}));
+const genRadar=()=>['Win Rate','Risk Mgmt','Consistency','Execution','Discipline','Profitability'].map(m=>({metric:m,value:Math.floor(rnd(25,85)),fullMark:100}));
+
+// ─── UI Components ───
+const Card=({children,style,onClick,glow})=>(
+  <div onClick={onClick} style={{background:T.card,border:`1px solid ${glow?T.amber+'44':T.border}`,borderRadius:14,padding:20,cursor:onClick?'pointer':'default',transition:'all .25s cubic-bezier(.4,0,.2,1)',boxShadow:glow?`0 0 30px ${T.amberDim}`:'none',...style}}>{children}</div>
+);
+
+const Stat=({label,value,sub,color,small})=>(
+  <div style={{minWidth:small?70:90}}>
+    <div style={{fontSize:10,color:T.textMut,textTransform:'uppercase',letterSpacing:1.2,marginBottom:5,fontFamily:T.mono}}>{label}</div>
+    <div style={{fontSize:small?16:21,fontWeight:700,color:color||T.text,fontFamily:T.mono,letterSpacing:-.5}}>{value}</div>
+    {sub&&<div style={{fontSize:10,color:T.textSub,marginTop:3}}>{sub}</div>}
+  </div>
+);
+
+const Bdg=({children,color=T.amber})=>(
+  <span style={{display:'inline-flex',alignItems:'center',padding:'3px 9px',borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:.6,color,background:`${color}18`,fontFamily:T.mono}}>{children}</span>
+);
+
+const Dot=({on})=><span style={{display:'inline-block',width:7,height:7,borderRadius:'50%',background:on?T.green:T.red,boxShadow:`0 0 8px ${on?T.green:T.red}55`,marginRight:6}}/>;
+
+const PTag=({p})=><Bdg color={p==='MT5'?T.cyan:T.amber}>{p}</Bdg>;
+
+const Prog=({value,max=100,color=T.amber,h=5})=>(
+  <div style={{background:T.border,borderRadius:h,height:h,width:'100%',overflow:'hidden'}}>
+    <div style={{width:`${Math.min(100,(value/max)*100)}%`,height:'100%',background:color,borderRadius:h,transition:'width .5s ease'}}/>
+  </div>
+);
+
+const TabBar=({tabs,active,onChange})=>(
+  <div style={{display:'flex',gap:3,background:T.bgSub,borderRadius:12,padding:4,marginBottom:20,overflowX:'auto',flexWrap:'nowrap'}}>
+    {tabs.map(t=>(
+      <button key={t.id} onClick={()=>onChange(t.id)} style={{padding:'10px 14px',borderRadius:9,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,fontFamily:T.font,color:active===t.id?T.bg:T.textMut,letterSpacing:.3,background:active===t.id?`linear-gradient(135deg,${T.amber},#d97706)`:'transparent',transition:'all .2s',whiteSpace:'nowrap'}}>{t.icon} {t.label}</button>
+    ))}
+  </div>
+);
+
+const CTip=({active,payload,label})=>{
+  if(!active||!payload?.length)return null;
+  return(<div style={{background:'#1a253a',border:`1px solid ${T.border}`,borderRadius:10,padding:12,fontSize:11,fontFamily:T.mono,boxShadow:'0 8px 32px rgba(0,0,0,.4)'}}>
+    <div style={{color:T.textMut,marginBottom:6,fontWeight:700,fontFamily:T.font}}>{label}</div>
+    {payload.map((p,i)=><div key={i} style={{color:p.color,display:'flex',justifyContent:'space-between',gap:20,padding:'2px 0'}}><span style={{fontFamily:T.font}}>{p.name}</span><span style={{fontWeight:700}}>{typeof p.value==='number'?p.value.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):p.value}</span></div>)}
+  </div>);
+};
+
+const FSBar=({s})=>(
+  <div style={{display:'flex',gap:14,alignItems:'center',padding:'7px 12px',background:T.bgSub,borderRadius:9,border:`1px solid ${T.border}`,fontSize:10,fontFamily:T.mono,flexWrap:'wrap'}}>
+    <span style={{color:T.green}}>● FIRESTORE</span>
+    <span style={{color:T.textMut}}>W:<span style={{color:T.amber}}>{s.writes}</span></span>
+    <span style={{color:T.textMut}}>D:<span style={{color:T.cyan}}>{s.docs}</span></span>
+    <span style={{color:T.textMut}}>L:<span style={{color:T.purple}}>{s.listeners}</span></span>
+  </div>
+);
+
+// ─── Main App ───
+function TradeForge(){
+  const [accounts,setAccounts]=useState(genAccounts);
+  const [selAcc,setSelAcc]=useState(null);
+  const [positions,setPositions]=useState({});
+  const [tab,setTab]=useState('overview');
+  const [logs,setLogs]=useState([]);
+  const [extracting,setExtracting]=useState(false);
+  const [live,setLive]=useState(false);
+  const [fsStats,setFsStats]=useState({writes:0,reads:0,cols:0,docs:0,listeners:0});
+  const [eqCurve]=useState(genEquity);
+  const [trades]=useState(()=>genDeals('all',50));
+  const [risk]=useState(genRisk);
+  const [radar]=useState(genRadar);
+  const [hourly]=useState(genHourly);
+  const [daily]=useState(genDaily);
+  const liveRef=useRef(null);
+
+  const addLog=useCallback((msg,type='info')=>{
+    setLogs(p=>[{time:new Date().toLocaleTimeString(),msg,type,id:Date.now()+Math.random()},...p].slice(0,200));
+  },[]);
+
+  const updFS=useCallback(()=>setFsStats(FS.stats()),[]);
+
+  useEffect(()=>{
+    if(live){
+      liveRef.current=setInterval(async()=>{
+        setAccounts(prev=>{
+          const up=prev.map(a=>{
+            const d=(Math.random()-.48)*a.equity*.002;
+            const ne=fix(a.equity+d);
+            return{...a,equity:ne,profit:fix(ne-a.balance),freeMargin:fix(ne-a.margin),marginLevel:fix((ne/a.margin)*100),lastSync:new Date().toISOString()};
+          });
+          FS.batchWrite('snapshots',up.map(a=>({id:`${a.id}_${Date.now()}`,data:{accountId:a.id,ts:new Date().toISOString(),balance:a.balance,equity:a.equity,profit:a.profit,margin:a.margin}})));
+          updFS();
+          return up;
+        });
+      },2500);
+      addLog('🔴 LIVE MODE — Streaming to Firestore','success');
+    }else{clearInterval(liveRef.current);}
+    return()=>clearInterval(liveRef.current);
+  },[live,addLog,updFS]);
+
+  // ─── Extraction Pipeline ───
+  const runExtraction=useCallback(async()=>{
+    setExtracting(true);setTab('extraction');
+    addLog('═══════════ TRADEFORGE EXTRACTION v2.0 ═══════════','header');
+    addLog('Connecting to Firebase Firestore...','info');
+    await new Promise(r=>setTimeout(r,300));
+    addLog('✓ Firestore connected → tradeforge-platform','firebase');
+    await new Promise(r=>setTimeout(r,200));
+
+    for(let i=0;i<accounts.length;i++){
+      const a=accounts[i];
+      await new Promise(r=>setTimeout(r,200));
+      addLog(`──── [${i+1}/10] ${a.name} (${a.platform}) ────`,'header');
+      await new Promise(r=>setTimeout(r,150));
+      addLog(a.platform==='MT5'?`  mt5.initialize(login=${a.login}, server="${a.server}")`:`  MT4 EA Bridge → ${a.server}:8080/api`,'code');
+      await new Promise(r=>setTimeout(r,180));
+
+      if(!a.connected&&Math.random()>.3){
+        addLog('  ⚠ Timeout — retrying...','warn');
+        await new Promise(r=>setTimeout(r,250));
+      }
+      addLog(`  ✓ Connected to ${a.broker}`,'success');
+
+      // Snapshot
+      await new Promise(r=>setTimeout(r,80));
+      addLog(`  → Balance: $${a.balance.toLocaleString()} | Equity: $${a.equity.toLocaleString()}`,'data');
+      const sr=await FS.batchWrite('snapshots',[{id:`${a.id}_${Date.now()}`,data:{accountId:a.id,ts:new Date().toISOString(),balance:a.balance,equity:a.equity,profit:a.profit}}]);
+      addLog(`  → Firestore: snapshots/ (${sr.ms.toFixed(0)}ms)`,'firebase');
+
+      // Positions
+      const pos=genPositions(a.id);
+      setPositions(p=>({...p,[a.id]:pos}));
+      const pr=await FS.batchWrite('positions',pos.map(p=>({id:p.id,data:p})));
+      addLog(`  → ${pos.length} positions → Firestore: positions/ (${pr.ms.toFixed(0)}ms)`,'firebase');
+
+      // Deals
+      const deals=genDeals(a.id,Math.floor(rnd(15,35)));
+      const dr=await FS.batchWrite('deals',deals.map(d=>({id:d.id,data:d})));
+      addLog(`  → ${deals.length} deals → Firestore: deals/ (${dr.ms.toFixed(0)}ms)`,'firebase');
+
+      // Risk
+      await FS.batchWrite('risk_metrics',[{id:`${a.id}_${new Date().toISOString().slice(0,10)}`,data:{accountId:a.id,winRate:a.winRate,pf:a.profitFactor,dd:a.maxDrawdown}}]);
+      addLog(`  → Risk metrics → Firestore: risk_metrics/`,'firebase');
+
+      await FS.batchWrite('accounts',[{id:a.id,data:a}]);
+      addLog(`  ✓ ${a.id} fully synced`,'success');
+      updFS();
+    }
+
+    await new Promise(r=>setTimeout(r,200));
+    addLog('═══════════ EXTRACTION COMPLETE ═══════════','header');
+    const st=FS.stats();
+    addLog(`✓ ${st.docs} docs across ${st.cols} collections | ${st.writes} writes`,'success');
+    setExtracting(false);updFS();
+  },[accounts,addLog,updFS]);
+
+  // Computed
+  const totEq=useMemo(()=>accounts.reduce((s,a)=>s+a.equity,0),[accounts]);
+  const totPL=useMemo(()=>accounts.reduce((s,a)=>s+a.profit,0),[accounts]);
+  const avgWR=useMemo(()=>accounts.reduce((s,a)=>s+a.winRate,0)/10,[accounts]);
+  const avgPF=useMemo(()=>accounts.reduce((s,a)=>s+a.profitFactor,0)/10,[accounts]);
+  const maxDD=useMemo(()=>Math.max(...accounts.map(a=>a.maxDrawdown)),[accounts]);
+
+  const tabs=[
+    {id:'overview',label:'Overview',icon:'◈'},
+    {id:'accounts',label:'Accounts',icon:'◉'},
+    {id:'positions',label:'Positions',icon:'▲'},
+    {id:'risk',label:'Risk Intel',icon:'◆'},
+    {id:'performance',label:'Performance',icon:'⚡'},
+    {id:'behavioral',label:'Behavioral',icon:'◎'},
+    {id:'firestore',label:'Firestore',icon:'🔥'},
+    {id:'extraction',label:'Extraction',icon:'⟐'},
+  ];
+
+  return(
+  <div style={{background:T.bg,minHeight:'100vh',color:T.text,fontFamily:T.font}}>
+    {/* HEADER */}
+    <div style={{background:`linear-gradient(180deg,${T.bgSub} 0%,${T.bg} 100%)`,borderBottom:`1px solid ${T.border}`,padding:'14px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12}}>
+      <div style={{display:'flex',alignItems:'center',gap:14}}>
+        <div style={{width:44,height:44,borderRadius:12,background:`linear-gradient(135deg,${T.amber},#b45309)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:900,color:'#000',fontFamily:T.mono}}>TF</div>
+        <div>
+          <div style={{fontSize:20,fontWeight:900,letterSpacing:-.7}}>TRADE<span style={{color:T.amber}}>FORGE</span></div>
+          <div style={{fontSize:9,color:T.textMut,letterSpacing:2,textTransform:'uppercase',fontFamily:T.mono}}>Risk Intelligence • Firebase Firestore</div>
+        </div>
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+        <FSBar s={fsStats}/>
+        <div onClick={()=>setLive(!live)} style={{display:'flex',alignItems:'center',gap:7,padding:'8px 14px',borderRadius:9,background:live?T.redDim:T.bgSub,border:`1px solid ${live?T.red+'55':T.border}`,cursor:'pointer',transition:'all .2s',userSelect:'none'}}>
+          <span style={{width:8,height:8,borderRadius:'50%',background:live?T.red:T.textMut,animation:live?'pulse 1.5s infinite':'none'}}/>
+          <span style={{fontSize:11,fontWeight:800,color:live?T.red:T.textMut,fontFamily:T.mono}}>{live?'LIVE':'PAUSED'}</span>
+        </div>
+        <button onClick={runExtraction} disabled={extracting} style={{padding:'10px 20px',borderRadius:9,border:'none',background:extracting?T.textMut:`linear-gradient(135deg,${T.amber},#b45309)`,color:'#000',fontWeight:800,fontSize:12,cursor:extracting?'not-allowed':'pointer',letterSpacing:.5,animation:!extracting?'glow 3s infinite':'none'}}>
+          {extracting?'⏳ EXTRACTING...':'⚡ EXTRACT → FIRESTORE'}
+        </button>
+      </div>
+    </div>
+
+    <div style={{padding:'20px 20px',maxWidth:1500,margin:'0 auto'}}>
+      <div style={{overflowX:'auto'}}><TabBar tabs={tabs} active={tab} onChange={setTab}/></div>
+
+      {/* ═══ OVERVIEW ═══ */}
+      {tab==='overview'&&<div style={{animation:'slideIn .3s ease'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12,marginBottom:16}}>
+          <Card><Stat label="Total Equity" value={`$${totEq.toLocaleString(undefined,{maximumFractionDigits:0})}`}/></Card>
+          <Card><Stat label="Total P&L" value={`${totPL>=0?'+':''}$${totPL.toLocaleString(undefined,{maximumFractionDigits:0})}`} color={totPL>=0?T.green:T.red}/></Card>
+          <Card><Stat label="Avg Win Rate" value={`${avgWR.toFixed(1)}%`} color={avgWR>50?T.green:T.amber}/></Card>
+          <Card><Stat label="Profit Factor" value={avgPF.toFixed(2)} color={avgPF>1.5?T.green:avgPF>1?T.amber:T.red}/></Card>
+          <Card><Stat label="Worst DD" value={`${maxDD.toFixed(1)}%`} color={maxDD>15?T.red:T.amber}/></Card>
+          <Card><Stat label="Firestore" value={fsStats.docs.toLocaleString()} sub={`${fsStats.writes} writes`} color={T.cyan}/></Card>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'5fr 3fr',gap:12,marginBottom:16}}>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Portfolio Equity Curve <Bdg color={T.green}>90D</Bdg></div>
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={eqCurve}>
+                <defs><linearGradient id="eG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.amber} stopOpacity={.15}/><stop offset="100%" stopColor={T.amber} stopOpacity={0}/></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.grid}/>
+                <XAxis dataKey="date" tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}} interval={12}/>
+                <YAxis tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}}/>
+                <Tooltip content={<CTip/>}/>
+                <Area type="monotone" dataKey="equity" fill="url(#eG)" stroke="none"/>
+                <Line type="monotone" dataKey="equity" stroke={T.amber} strokeWidth={2.5} dot={false} name="Equity"/>
+                <Line type="monotone" dataKey="balance" stroke={T.blue} strokeWidth={1.5} dot={false} strokeDasharray="5 5" name="Balance"/>
+              </ComposedChart>
+            </ResponsiveContainer>
+          </Card>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Symbol Exposure</div>
+            <ResponsiveContainer width="100%" height={260}>
+              <PieChart>
+                <Pie data={risk.conc} dataKey="exposure" nameKey="symbol" cx="50%" cy="50%" outerRadius={82} innerRadius={45} paddingAngle={3} label={({symbol,percent})=>`${symbol} ${(percent*100).toFixed(0)}%`} labelLine={{stroke:T.textMut}}>
+                  {risk.conc.map((_,i)=><Cell key={i} fill={CC[i]}/>)}
+                </Pie><Tooltip/>
+              </PieChart>
+            </ResponsiveContainer>
+          </Card>
+        </div>
+
+        {/* Account Table */}
+        <Card>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>All Accounts</div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+              <thead><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                {['','Account','Type','Broker','Equity','P&L','Win%','PF','DD','Pos'].map(h=><th key={h} style={{padding:'10px 8px',textAlign:'left',color:T.textMut,fontWeight:700,fontSize:9,textTransform:'uppercase',letterSpacing:1.2,fontFamily:T.mono}}>{h}</th>)}
+              </tr></thead>
+              <tbody>{accounts.map(a=>(
+                <tr key={a.id} onClick={()=>{setSelAcc(a.id);setTab('accounts')}} style={{borderBottom:`1px solid ${T.border}08`,cursor:'pointer',transition:'background .15s'}} onMouseEnter={e=>e.currentTarget.style.background=T.cardHover} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                  <td style={{padding:'10px 8px'}}><Dot on={a.connected}/></td>
+                  <td style={{padding:'10px 8px'}}><div style={{fontWeight:700}}>{a.name}</div><div style={{color:T.textMut,fontSize:9,fontFamily:T.mono}}>{a.id}</div></td>
+                  <td style={{padding:'10px 8px'}}><PTag p={a.platform}/></td>
+                  <td style={{padding:'10px 8px',color:T.textSub}}>{a.broker}</td>
+                  <td style={{padding:'10px 8px',fontFamily:T.mono,fontWeight:600}}>${a.equity.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                  <td style={{padding:'10px 8px',fontFamily:T.mono,fontWeight:700,color:a.profit>=0?T.green:T.red}}>{a.profit>=0?'+':''}${a.profit.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                  <td style={{padding:'10px 8px'}}><div style={{display:'flex',alignItems:'center',gap:6}}><Prog value={a.winRate} color={a.winRate>55?T.green:a.winRate>45?T.amber:T.red}/><span style={{fontFamily:T.mono,fontSize:10,minWidth:34}}>{a.winRate.toFixed(0)}%</span></div></td>
+                  <td style={{padding:'10px 8px',fontFamily:T.mono,color:a.profitFactor>1.5?T.green:a.profitFactor>1?T.amber:T.red}}>{a.profitFactor.toFixed(2)}</td>
+                  <td style={{padding:'10px 8px',fontFamily:T.mono,color:a.maxDrawdown>15?T.red:T.amber}}>{a.maxDrawdown.toFixed(1)}%</td>
+                  <td style={{padding:'10px 8px',textAlign:'center'}}><Bdg color={T.blue}>{a.openPositions}</Bdg></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </Card>
+      </div>}
+
+      {/* ═══ ACCOUNTS ═══ */}
+      {tab==='accounts'&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(330px,1fr))',gap:12,animation:'slideIn .3s ease'}}>
+        {accounts.map(a=>(
+          <Card key={a.id} onClick={()=>setSelAcc(selAcc===a.id?null:a.id)} glow={selAcc===a.id}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:14}}>
+              <div>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}><Dot on={a.connected}/><span style={{fontWeight:800,fontSize:15}}>{a.name}</span></div>
+                <div style={{fontSize:10,color:T.textMut,fontFamily:T.mono}}>{a.id} • {a.login} • {a.broker}</div>
+              </div>
+              <PTag p={a.platform}/>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:12}}>
+              <Stat label="Equity" value={`$${a.equity.toLocaleString(undefined,{maximumFractionDigits:0})}`} small/>
+              <Stat label="P&L" value={`${a.profit>=0?'+':''}$${Math.abs(a.profit).toLocaleString(undefined,{maximumFractionDigits:0})}`} color={a.profit>=0?T.green:T.red} small/>
+              <Stat label="Margin" value={`${a.marginLevel.toFixed(0)}%`} color={a.marginLevel<200?T.red:T.green} small/>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6}}>
+              {[['Win%',`${a.winRate.toFixed(0)}%`],['PF',a.profitFactor.toFixed(2)],['Sharpe',a.sharpeRatio.toFixed(2)],['Trades',a.totalTrades]].map(([l,v])=>(
+                <div key={l} style={{fontSize:9,color:T.textMut,fontFamily:T.mono}}>{l}<div style={{color:T.text,fontWeight:700,fontSize:12}}>{v}</div></div>
+              ))}
+            </div>
+            {selAcc===a.id&&<div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${T.border}`}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,fontSize:10}}>
+                {[['Server',a.server],['Leverage',`1:${a.leverage}`],['Free Margin',`$${a.freeMargin.toLocaleString()}`],['Max DD',`${a.maxDrawdown.toFixed(1)}%`],['Avg Trade',`${a.avgTradeTime}min`],['Synced',new Date(a.lastSync).toLocaleTimeString()]].map(([l,v])=>(
+                  <div key={l}><span style={{color:T.textMut}}>{l}: </span><span style={{fontFamily:T.mono,color:T.textSub}}>{v}</span></div>
+                ))}
+              </div>
+              <div style={{marginTop:10,padding:'8px 10px',background:T.bgSub,borderRadius:8,fontSize:10,fontFamily:T.mono,color:T.cyan}}>🔥 Firestore: /users/uid/accounts/{a.id}</div>
+            </div>}
+          </Card>
+        ))}
+      </div>}
+
+      {/* ═══ POSITIONS ═══ */}
+      {tab==='positions'&&<div style={{animation:'slideIn .3s ease'}}>
+        <Card style={{marginBottom:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+            <div><div style={{fontSize:14,fontWeight:700}}>Live Open Positions</div><div style={{fontSize:11,color:T.textSub}}>{Object.values(positions).flat().length} positions • {Object.keys(positions).length} accounts</div></div>
+            <div style={{fontSize:10,fontFamily:T.mono,color:T.cyan}}>🔥 onSnapshot() active</div>
+          </div>
+        </Card>
+        <Card>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+              <thead><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                {['Ticket','Account','Symbol','Type','Vol','Open','Current','SL','TP','P&L','Swap'].map(h=><th key={h} style={{padding:'9px 7px',textAlign:'left',color:T.textMut,fontWeight:700,fontSize:9,textTransform:'uppercase',letterSpacing:1,fontFamily:T.mono}}>{h}</th>)}
+              </tr></thead>
+              <tbody>{Object.values(positions).flat().slice(0,50).map(p=>(
+                <tr key={p.id} style={{borderBottom:`1px solid ${T.border}08`}}>
+                  <td style={{padding:'7px',fontFamily:T.mono,fontSize:10,color:T.textMut}}>{p.ticket}</td>
+                  <td style={{padding:'7px',fontSize:10,color:T.textSub}}>{p.accountId}</td>
+                  <td style={{padding:'7px',fontWeight:700}}>{p.symbol}</td>
+                  <td style={{padding:'7px'}}><Bdg color={p.type==='BUY'?T.green:T.red}>{p.type}</Bdg></td>
+                  <td style={{padding:'7px',fontFamily:T.mono}}>{p.volume}</td>
+                  <td style={{padding:'7px',fontFamily:T.mono,fontSize:10}}>{p.openPrice}</td>
+                  <td style={{padding:'7px',fontFamily:T.mono,fontSize:10}}>{p.currentPrice}</td>
+                  <td style={{padding:'7px',fontFamily:T.mono,fontSize:10,color:T.red}}>{p.sl}</td>
+                  <td style={{padding:'7px',fontFamily:T.mono,fontSize:10,color:T.green}}>{p.tp}</td>
+                  <td style={{padding:'7px',fontFamily:T.mono,fontWeight:700,color:p.profit>=0?T.green:T.red}}>{p.profit>=0?'+':''}${p.profit.toFixed(2)}</td>
+                  <td style={{padding:'7px',fontFamily:T.mono,fontSize:10,color:T.textMut}}>${p.swap.toFixed(2)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          {Object.values(positions).flat().length===0&&<div style={{textAlign:'center',padding:50,color:T.textMut}}>
+            <div style={{fontSize:28,marginBottom:10}}>⚡</div>Click <strong style={{color:T.amber}}>EXTRACT → FIRESTORE</strong> to pull positions
+          </div>}
+        </Card>
+      </div>}
+
+      {/* ═══ RISK ═══ */}
+      {tab==='risk'&&<div style={{animation:'slideIn .3s ease'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:16}}>
+          <Card><Stat label="Daily VaR 95%" value={`${risk.dVaR}%`} color={risk.dVaR>4?T.red:T.amber}/></Card>
+          <Card><Stat label="Weekly VaR" value={`${risk.wVaR}%`} color={risk.wVaR>8?T.red:T.amber}/></Card>
+          <Card><Stat label="Peak Leverage" value={`${risk.maxLev}x`} color={risk.maxLev>30?T.red:T.green}/></Card>
+          <Card><Stat label="High Alerts" value={risk.flags.filter(f=>f.sev==='high').length} color={T.red}/></Card>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Concentration Risk</div>
+            <ResponsiveContainer width="100%" height={230}>
+              <BarChart data={risk.conc} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke={T.grid}/>
+                <XAxis type="number" tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}}/>
+                <YAxis dataKey="symbol" type="category" tick={{fill:T.textSub,fontSize:10,fontFamily:T.mono}} width={60}/>
+                <Tooltip content={<CTip/>}/>
+                <Bar dataKey="exposure" radius={[0,6,6,0]} name="Exposure %">{risk.conc.map((e,i)=><Cell key={i} fill={e.exposure>30?T.red:e.exposure>20?T.amber:T.green}/>)}</Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Correlations</div>
+            {risk.corr.map((c,i)=>(
+              <div key={i} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 0',borderBottom:i<risk.corr.length-1?`1px solid ${T.border}`:'none'}}>
+                <span style={{fontSize:11,fontWeight:600,fontFamily:T.mono}}>{c.pair}</span>
+                <div style={{display:'flex',alignItems:'center',gap:10,width:130}}>
+                  <Prog value={Math.abs(c.c)*100} color={Math.abs(c.c)>.7?T.red:T.amber} h={6}/>
+                  <span style={{fontFamily:T.mono,fontSize:12,fontWeight:700,color:Math.abs(c.c)>.7?T.red:T.amber,minWidth:42,textAlign:'right'}}>{c.c>0?'+':''}{c.c.toFixed(2)}</span>
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
+        <Card>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>⚠ Behavioral Risk Alerts</div>
+          <div style={{display:'grid',gap:8}}>
+            {risk.flags.map((f,i)=>{
+              const col=f.sev==='high'?T.red:f.sev==='medium'?T.amber:T.blue;
+              return(<div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',background:`${col}0a`,borderRadius:10,border:`1px solid ${col}18`}}>
+                <Bdg color={col}>{f.sev.toUpperCase()}</Bdg>
+                <div style={{flex:1}}><div style={{fontWeight:700,fontSize:12}}>{f.flag}</div><div style={{fontSize:10,color:T.textSub,marginTop:2}}>{f.detail}</div></div>
+                <Bdg color={T.textMut}>{f.n}×</Bdg>
+              </div>);
+            })}
+          </div>
+        </Card>
+      </div>}
+
+      {/* ═══ PERFORMANCE ═══ */}
+      {tab==='performance'&&<div style={{animation:'slideIn .3s ease'}}>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Hourly Performance</div>
+            <ResponsiveContainer width="100%" height={240}>
+              <ComposedChart data={hourly}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.grid}/>
+                <XAxis dataKey="hour" tick={{fill:T.textMut,fontSize:8,fontFamily:T.mono}} interval={3}/>
+                <YAxis yAxisId="l" tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}}/>
+                <YAxis yAxisId="r" orientation="right" tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}}/>
+                <Tooltip content={<CTip/>}/>
+                <Bar yAxisId="l" dataKey="trades" fill={T.blueDim} radius={[3,3,0,0]} name="Trades"/>
+                <Line yAxisId="r" type="monotone" dataKey="avgProfit" stroke={T.amber} strokeWidth={2} dot={false} name="Avg Profit"/>
+                <ReferenceLine yAxisId="r" y={0} stroke={T.textMut} strokeDasharray="3 3"/>
+              </ComposedChart>
+            </ResponsiveContainer>
+          </Card>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Daily Performance</div>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={daily}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.grid}/>
+                <XAxis dataKey="day" tick={{fill:T.textSub,fontSize:11,fontFamily:T.mono}}/>
+                <YAxis tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}}/>
+                <Tooltip content={<CTip/>}/>
+                <Bar dataKey="profit" name="Profit ($)" radius={[6,6,0,0]}>{daily.map((d,i)=><Cell key={i} fill={d.profit>=0?T.green:T.red}/>)}</Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>P&L Distribution</div>
+            <ResponsiveContainer width="100%" height={230}>
+              <BarChart data={(()=>{const b={};trades.forEach(t=>{const k=Math.floor(t.profit/50)*50;b[k]=(b[k]||0)+1});return Object.entries(b).sort((a,b)=>+a[0]-+b[0]).map(([r,c])=>({range:`${+r>=0?'+':''}$${r}`,count:c,pos:+r>=0}))})()}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.grid}/>
+                <XAxis dataKey="range" tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}}/>
+                <YAxis tick={{fill:T.textMut,fontSize:9,fontFamily:T.mono}}/>
+                <Tooltip content={<CTip/>}/>
+                <Bar dataKey="count" name="Trades" radius={[4,4,0,0]}>
+                  {(()=>{const b={};trades.forEach(t=>{const k=Math.floor(t.profit/50)*50;b[k]=(b[k]||0)+1});return Object.keys(b).sort((a,b)=>+a-+b).map((r,i)=><Cell key={i} fill={+r>=0?T.green:T.red}/>)})()}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Recent Trades</div>
+            <div style={{maxHeight:230,overflowY:'auto'}}>
+              {trades.slice(0,15).map(t=>(
+                <div key={t.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 0',borderBottom:`1px solid ${T.border}08`,fontSize:11}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    <Bdg color={t.type==='BUY'?T.green:T.red}>{t.type}</Bdg>
+                    <span style={{fontWeight:700}}>{t.symbol}</span>
+                    <span style={{color:T.textMut,fontSize:10}}>{t.volume}lot</span>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:12}}>
+                    <span style={{color:T.textMut,fontSize:10,fontFamily:T.mono}}>{t.duration}m</span>
+                    <span style={{fontFamily:T.mono,fontWeight:700,color:t.profit>=0?T.green:T.red,minWidth:60,textAlign:'right'}}>{t.profit>=0?'+':''}${t.profit.toFixed(2)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      </div>}
+
+      {/* ═══ BEHAVIORAL ═══ */}
+      {tab==='behavioral'&&<div style={{animation:'slideIn .3s ease'}}>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Trader Performance Radar</div>
+            <ResponsiveContainer width="100%" height={300}>
+              <RadarChart data={radar}>
+                <PolarGrid stroke={T.grid}/>
+                <PolarAngleAxis dataKey="metric" tick={{fill:T.textSub,fontSize:10}}/>
+                <PolarRadiusAxis angle={30} domain={[0,100]} tick={{fill:T.textMut,fontSize:8}}/>
+                <Radar name="Score" dataKey="value" stroke={T.amber} fill={T.amber} fillOpacity={.15} strokeWidth={2}/>
+              </RadarChart>
+            </ResponsiveContainer>
+          </Card>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>Score Breakdown</div>
+            {radar.map((m,i)=>(
+              <div key={i} style={{marginBottom:14}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:5,fontSize:11}}>
+                  <span style={{fontWeight:600}}>{m.metric}</span>
+                  <span style={{fontFamily:T.mono,fontWeight:700,color:m.value>70?T.green:m.value>40?T.amber:T.red}}>{m.value}/100</span>
+                </div>
+                <Prog value={m.value} color={m.value>70?T.green:m.value>40?T.amber:T.red} h={7}/>
+              </div>
+            ))}
+          </Card>
+        </div>
+        <Card>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:6}}>Behavioral Intelligence Report</div>
+          <div style={{fontSize:11,color:T.textSub,marginBottom:18}}>AI-analyzed patterns across all connected accounts</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            {[
+              {t:'Session Discipline',s:72,d:'Trading concentrated during London/NY overlap. Minimal overnight exposure.',c:T.green},
+              {t:'Loss Recovery',s:41,d:'Increased sizing after consecutive losses. 3 revenge episodes this month.',c:T.red},
+              {t:'Risk Management',s:65,d:'SL/TP ratio 1:1.8. Stop-loss compliance 87%. 5 SL widenings detected.',c:T.amber},
+              {t:'Position Sizing',s:58,d:'Inconsistent lots vs equity. Max position 3.2% of equity vs 1% target.',c:T.amber},
+            ].map((b,i)=>(
+              <div key={i} style={{padding:16,background:`${b.c}0a`,borderRadius:10,border:`1px solid ${b.c}18`}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <span style={{fontWeight:700,fontSize:12}}>{b.t}</span>
+                  <span style={{fontFamily:T.mono,fontWeight:800,fontSize:18,color:b.c}}>{b.s}</span>
+                </div>
+                <div style={{fontSize:10,color:T.textSub,lineHeight:1.7}}>{b.d}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>}
+
+      {/* ═══ FIRESTORE ═══ */}
+      {tab==='firestore'&&<div style={{animation:'slideIn .3s ease'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12,marginBottom:16}}>
+          <Card glow><Stat label="Total Writes" value={fsStats.writes.toLocaleString()} color={T.amber}/></Card>
+          <Card><Stat label="Total Reads" value={fsStats.reads.toLocaleString()} color={T.blue}/></Card>
+          <Card><Stat label="Collections" value={fsStats.cols} color={T.purple}/></Card>
+          <Card><Stat label="Documents" value={fsStats.docs.toLocaleString()} color={T.cyan}/></Card>
+          <Card><Stat label="Listeners" value={fsStats.listeners} sub="onSnapshot()" color={T.green}/></Card>
+        </div>
+
+        <Card style={{marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>🔥 Firestore Database Schema</div>
+          <div style={{background:T.bgSub,borderRadius:10,padding:18,fontFamily:T.mono,fontSize:11,lineHeight:2.2,border:`1px solid ${T.border}`,overflowX:'auto'}}>
+            <div style={{color:T.amber,fontWeight:700}}>Cloud Firestore — tradeforge-platform</div>
+            <div style={{color:T.textMut,marginTop:8}}>
+              <div style={{color:T.cyan}}>📁 /users/{'{userId}'}/</div>
+              <div style={{paddingLeft:20}}>
+                <div><span style={{color:T.green}}>├── 📁 accounts/</span><span style={{color:T.textMut}}> {'{'}{ Object.keys(FS.db.accounts||{}).length} docs{'}'}</span></div>
+                <div style={{paddingLeft:24,color:T.textSub}}>login, platform, broker, server, balance, equity, winRate, profitFactor</div>
+                <div><span style={{color:T.green}}>├── 📁 snapshots/</span><span style={{color:T.textMut}}> {'{'}{Object.keys(FS.db.snapshots||{}).length} docs{'}'} — TimeSeries</span></div>
+                <div style={{paddingLeft:24,color:T.textSub}}>accountId, timestamp, balance, equity, margin, profit, marginLevel</div>
+                <div><span style={{color:T.green}}>├── 📁 positions/</span><span style={{color:T.textMut}}> {'{'}{Object.keys(FS.db.positions||{}).length} docs{'}'} — Real-time</span></div>
+                <div style={{paddingLeft:24,color:T.textSub}}>ticket, symbol, type, volume, openPrice, sl, tp, profit, status</div>
+                <div><span style={{color:T.green}}>├── 📁 deals/</span><span style={{color:T.textMut}}> {'{'}{Object.keys(FS.db.deals||{}).length} docs{'}'} — Historical</span></div>
+                <div style={{paddingLeft:24,color:T.textSub}}>ticket, symbol, profit, pips, duration, closeTime, commission</div>
+                <div><span style={{color:T.green}}>├── 📁 risk_metrics/</span><span style={{color:T.textMut}}> {'{'}{Object.keys(FS.db.risk_metrics||{}).length} docs{'}'} — Daily</span></div>
+                <div style={{paddingLeft:24,color:T.textSub}}>dailyVaR, weeklyVaR, concentrationRisk[], behavioralFlags[]</div>
+                <div><span style={{color:T.green}}>└── 📁 market_data/</span><span style={{color:T.textMut}}> OHLCV candles per symbol/timeframe</span></div>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>Why Firestore?</div>
+            <div style={{fontSize:11,color:T.textSub,lineHeight:1.9}}>
+              {[['Compound Queries','Filter by symbol + date + account in a single query'],
+                ['Auto-Scaling','Handles millions of docs. 10 accts × 50 trades/day × 365 = 180K+ deals/yr'],
+                ['Real-time Sync','onSnapshot() powers live dashboards without polling'],
+                ['Batch Writes','500 ops/batch — perfect for bulk position syncs'],
+                ['Offline Support','SDK caches locally for intermittent connectivity'],
+                ['BigQuery Export','One-click export for heavy ML/analytics workloads'],
+              ].map(([t,d],i)=>(<div key={i} style={{marginBottom:8}}><span style={{color:T.amber,fontWeight:700}}>{t}: </span>{d}</div>))}
+            </div>
+          </Card>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>Architecture</div>
+            <div style={{background:T.bgSub,borderRadius:10,padding:16,fontFamily:T.mono,fontSize:10,lineHeight:2.4,border:`1px solid ${T.border}`}}>
+              <div style={{color:T.amber}}>MT4/MT5 Terminals (10 accts)</div>
+              <div style={{color:T.textMut}}>        │</div>
+              <div style={{color:T.cyan}}>Python Extraction Service</div>
+              <div style={{color:T.textMut}}>   APScheduler / Cloud Functions</div>
+              <div style={{color:T.textMut}}>        │</div>
+              <div style={{color:T.green}}>Firebase Admin SDK</div>
+              <div style={{color:T.textMut}}>   batch writes, server auth</div>
+              <div style={{color:T.textMut}}>        │</div>
+              <div style={{color:T.purple}}>Cloud Firestore</div>
+              <div style={{color:T.textMut}}>   auto-scale, real-time sync</div>
+              <div style={{color:T.textMut}}>        │</div>
+              <div style={{color:T.amber}}>React Dashboard (Vercel)</div>
+              <div style={{color:T.textMut}}>   onSnapshot() listeners</div>
+              <div style={{color:T.textMut}}>        │</div>
+              <div style={{color:T.red}}>BigQuery (optional ML/analytics)</div>
+            </div>
+          </Card>
+        </div>
+
+        <Card>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>Integration Code</div>
+          <pre style={{background:'#040812',padding:16,borderRadius:10,fontSize:10,lineHeight:1.8,overflowX:'auto',color:T.textSub,fontFamily:T.mono,border:`1px solid ${T.border}`}}>{`// firebase.js — Production Integration
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, doc, writeBatch,
+  onSnapshot, query, where, orderBy, limit,
+  Timestamp } from 'firebase/firestore';
+
+const app = initializeApp({
+  projectId: "tradeforge-platform",
+  apiKey: "AIza...",
+});
+const db = getFirestore(app);
+
+// Batch write positions after extraction
+export async function writePositions(uid, positions) {
+  const batch = writeBatch(db);
+  positions.forEach(pos => {
+    const ref = doc(db, \`users/\${uid}/positions\`, \`\${pos.ticket}\`);
+    batch.set(ref, { ...pos, lastUpdated: Timestamp.now() });
+  });
+  await batch.commit(); // max 500 per batch
+}
+
+// Real-time dashboard listener
+export function subscribePositions(uid, callback) {
+  const q = query(
+    collection(db, \`users/\${uid}/positions\`),
+    where('status', '==', 'open'),
+    orderBy('profit', 'desc')
+  );
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  });
+}
+
+// Firestore Security Rules
+// rules_version = '2';
+// service cloud.firestore {
+//   match /databases/{db}/documents {
+//     match /users/{userId}/{document=**} {
+//       allow read, write: if request.auth != null
+//         && request.auth.uid == userId;
+//     }
+//   }
+// }`}</pre>
+        </Card>
+      </div>}
+
+      {/* ═══ EXTRACTION ═══ */}
+      {tab==='extraction'&&<div style={{animation:'slideIn .3s ease'}}>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
+          <Card>
+            <div style={{fontSize:10,color:T.textMut,textTransform:'uppercase',letterSpacing:1.2,fontFamily:T.mono,marginBottom:8}}>Pipeline Stack</div>
+            <div style={{fontSize:11,color:T.textSub,lineHeight:2.2}}>
+              <div><Bdg color={T.cyan}>MT5</Bdg> Python MetaTrader5 lib</div>
+              <div><Bdg color={T.amber}>MT4</Bdg> MQL4 EA + HTTP Bridge</div>
+              <div><Bdg color={T.purple}>DB</Bdg> Cloud Firestore</div>
+              <div><Bdg color={T.green}>RT</Bdg> onSnapshot() listeners</div>
+            </div>
+          </Card>
+          <Card><Stat label="Status" value={extracting?'RUNNING':'IDLE'} color={extracting?T.amber:T.textMut}/><div style={{marginTop:10,fontSize:11,color:T.textSub}}>{logs.length} log entries</div></Card>
+          <Card><Stat label="Firestore Docs" value={fsStats.docs.toLocaleString()} sub={`${fsStats.writes} writes`} color={T.cyan}/></Card>
+        </div>
+        <Card>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,flexWrap:'wrap',gap:8}}>
+            <div style={{fontSize:14,fontWeight:700}}>Extraction Console</div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={runExtraction} disabled={extracting} style={{padding:'8px 16px',borderRadius:7,border:'none',background:extracting?T.textMut:T.amber,color:'#000',fontWeight:800,fontSize:11,cursor:extracting?'not-allowed':'pointer'}}>{extracting?'Running...':'▶ Run'}</button>
+              <button onClick={()=>setLogs([])} style={{padding:'8px 16px',borderRadius:7,border:`1px solid ${T.border}`,background:'transparent',color:T.textSub,fontWeight:600,fontSize:11,cursor:'pointer'}}>Clear</button>
+            </div>
+          </div>
+          <div style={{background:'#030610',borderRadius:10,padding:16,fontFamily:T.mono,fontSize:10,lineHeight:1.9,maxHeight:460,overflowY:'auto',border:`1px solid ${T.border}`}}>
+            {logs.length===0?<div style={{textAlign:'center',padding:50,color:T.textMut}}>
+              <div style={{fontSize:30,marginBottom:10}}>⚡</div>
+              Click <strong style={{color:T.amber}}>EXTRACT → FIRESTORE</strong> to begin
+              <div style={{marginTop:6,fontSize:9}}>10 MT4/MT5 accounts → Cloud Firestore</div>
+            </div>:logs.map(l=>(
+              <div key={l.id} style={{display:'flex',gap:10}}>
+                <span style={{color:T.textMut,minWidth:62}}>{l.time}</span>
+                <span style={{color:l.type==='success'?T.green:l.type==='warn'?T.amber:l.type==='data'?T.cyan:l.type==='firebase'?T.orange:l.type==='header'?T.amber:l.type==='code'?T.purple:T.textSub,fontWeight:l.type==='header'?800:400}}>{l.msg}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{marginTop:16}}>
+            <div style={{fontSize:12,fontWeight:700,marginBottom:10}}>Connected Accounts</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:6}}>
+              {accounts.map(a=>(
+                <div key={a.id} style={{display:'flex',alignItems:'center',gap:6,padding:'7px 10px',background:T.bgSub,borderRadius:8,fontSize:10}}>
+                  <Dot on={a.connected}/><PTag p={a.platform}/>
+                  <span style={{color:T.textSub,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.name}</span>
+                  <span style={{color:T.textMut,fontFamily:T.mono}}>{a.login}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      </div>}
+
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<TradeForge/>);
+</script>
+</body>
+</html>
